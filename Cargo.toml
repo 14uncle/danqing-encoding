@@ -1,0 +1,9 @@
+[package]
+name = "danqing-encoding"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "丹青编码检测与转码 —— BOM/交替NUL/UTF-8/GBK/Latin-1 检测流水线 + GBK CP936 FFI"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
