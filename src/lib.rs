@@ -274,6 +274,19 @@ mod gbk {
     }
 }
 
+/// 字节序列转正则转义字面量: 每字节 `\xNN`, 前缀 `(?-u)` 关 Unicode 模式。
+/// 用途: GBK 编码下搜索非 ASCII 查询 —— encode_query 先转编码字节,
+/// 再经本函数构造 bytes::Regex 可用的字面量模式。
+pub fn bytes_as_literal_regex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 4 + 5);
+    s.push_str("(?-u)");
+    for &b in bytes {
+        let _ = write!(s, "\\x{b:02X}");
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,5 +372,12 @@ mod tests {
         let s = decode_line(Encoding::Latin1, &[0x41, 0xE9, 0xFF]);
         assert_eq!(s.chars().count(), 3);
         assert_eq!(s.chars().nth(1).unwrap(), '\u{E9}');
+    }
+
+    #[test]
+    fn bytes_as_literal_regex_gbk() {
+        assert_eq!(bytes_as_literal_regex(&[0xD6, 0xD0]), "(?-u)\\xD6\\xD0");
+        assert_eq!(bytes_as_literal_regex(b"A"), "(?-u)\\x41");
+        assert_eq!(bytes_as_literal_regex(&[]), "(?-u)");
     }
 }
