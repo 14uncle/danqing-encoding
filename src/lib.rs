@@ -73,9 +73,20 @@ pub fn detect(head: &[u8]) -> Encoding {
     Encoding::Latin1
 }
 
-/// 交替 NUL 模式判 UTF-16: NUL 占比 >12.5% 且奇偶分布 3:1 以上偏斜。
-/// LE 的 ASCII 字符 = 低字节在前 (奇位为 0), BE 反之。
+/// 交替 NUL 模式判 UTF-16 的最小 NUL 个数。
+///
+/// 奇偶偏斜是**统计**主张, 3:1 偏斜在 n=1 上毫无意义: 6 字节 1 个奇位 NUL
+/// 曾把 UTF-8 短行误判成 UTF-16, 转码把逗号/换行全吞掉, 计数与内容双双错
+/// (2026-10-10 PlainSight 红队 Critical)。要求至少本值个 NUL 才谈偏斜 ——
+/// 真 UTF-16 的 ASCII 部分每字符一个 NUL, 很轻松过; 零星污染的 UTF-8 过不了。
+const UTF16_NUL_MIN_COUNT: usize = 8;
+
+/// 交替 NUL 模式判 UTF-16: NUL 个数 ≥ [`UTF16_NUL_MIN_COUNT`] 且占比 >12.5%
+/// 且奇偶分布 3:1 以上偏斜。LE 的 ASCII 字符 = 低字节在前 (奇位为 0), BE 反之。
 fn detect_utf16_by_nuls(sample: &[u8]) -> Option<Encoding> {
+    if sample.is_empty() {
+        return None;
+    }
     let mut even_nul = 0usize;
     let mut odd_nul = 0usize;
     for (i, &b) in sample.iter().enumerate() {
@@ -87,7 +98,7 @@ fn detect_utf16_by_nuls(sample: &[u8]) -> Option<Encoding> {
             }
         }
     }
-    if (even_nul + odd_nul) * 8 <= sample.len() {
+    if (even_nul + odd_nul) < UTF16_NUL_MIN_COUNT || (even_nul + odd_nul) * 8 <= sample.len() {
         return None;
     }
     if odd_nul > even_nul * 3 {
@@ -326,6 +337,14 @@ mod tests {
     #[test]
     fn detect_gbk_by_pair_coverage() {
         assert_eq!(detect(GBK_LINE), Encoding::Gbk, "GBK 中文行判 GBK");
+    }
+
+    #[test]
+    fn stray_nul_in_tiny_utf8_is_not_utf16() {
+        // 零星 NUL 的 UTF-8 短行: n=1 的偏斜不作数, 不许误判 UTF-16
+        // (2026-10-10 红队 Critical: 误判后转码吞掉逗号/换行, 计数错且零横幅)。
+        assert_eq!(detect(b"a\0b,c\n"), Encoding::Utf8);
+        assert_eq!(detect(b"a\0b\nc\0d\ne\0f\n"), Encoding::Utf8);
     }
 
     #[test]
