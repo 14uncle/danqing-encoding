@@ -178,6 +178,26 @@ pub fn decode_line(enc: Encoding, raw: &[u8]) -> Cow<'_, str> {
     }
 }
 
+/// 整段字节 → (解码文本, 检出编码)。
+///
+/// [`detect`] → UTF-16 转码 / 行解码 → 剥 UTF-8 BOM 的**组合层** —— 开文件时最常用的
+/// 一步 (下沉自 danqing-luoban `encoding.rs`, 2026-10-10, 复盘小件包)。
+///
+/// UTF-16 的 BOM 由 [`transcode_utf16`] 剥; 这里剥的是 **UTF-8 BOM**
+/// ([`detect`] 会因 `EF BB BF` 判为 [`Encoding::Utf8`], 而 [`decode_line`] 原样保留那三字节)。
+pub fn decode_bytes(raw: &[u8]) -> (String, Encoding) {
+    let enc = detect(raw);
+    let mut text = match enc {
+        Encoding::Utf16Le => String::from_utf8_lossy(&transcode_utf16(true, raw)).into_owned(),
+        Encoding::Utf16Be => String::from_utf8_lossy(&transcode_utf16(false, raw)).into_owned(),
+        _ => decode_line(enc, raw).into_owned(),
+    };
+    if text.starts_with('\u{FEFF}') {
+        text.remove(0);
+    }
+    (text, enc)
+}
+
 /// 搜索/过滤查询转码到文件编码字节 (GBK 中文查询的核心; 其余编码原样)。
 pub fn encode_query(enc: Encoding, q: &str) -> Vec<u8> {
     match enc {
@@ -305,6 +325,57 @@ mod tests {
     /// GBK 字节常量 (CP936 实测校准: 中=D6D0 文=CEC4 错=B4ED 误=CEF3 日=C8D5 志=DBBE)。
     const GBK_ZHONGWEN: &[u8] = b"\xD6\xD0\xCE\xC4";
     const GBK_LINE: &[u8] = b"INFO \xD6\xD0\xCE\xC4\xB4\xED\xCE\xF3\xC8\xD5\xD6\xBE\n";
+
+    // ── decode_bytes (件5b: 整段字节 → 文本, 下沉自 danqing-luoban) ──
+
+    #[test]
+    fn decode_bytes_matrix() {
+        // UTF-8 无 BOM
+        let (t, e) = decode_bytes("hello 中文\n".as_bytes());
+        assert_eq!((t.as_str(), e), ("hello 中文\n", Encoding::Utf8));
+
+        // UTF-8 带 BOM → BOM 必须剥掉
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice("中文\n".as_bytes());
+        let (t, e) = decode_bytes(&with_bom);
+        assert_eq!(e, Encoding::Utf8);
+        assert_eq!(t, "中文\n", "UTF-8 BOM 必须剥掉");
+
+        // UTF-16LE 带 BOM
+        let mut le = vec![0xFF, 0xFE];
+        le.extend("中文\n".encode_utf16().flat_map(|u| u.to_le_bytes()));
+        let (t, e) = decode_bytes(&le);
+        assert_eq!(e, Encoding::Utf16Le);
+        assert_eq!(t, "中文\n");
+
+        // UTF-16BE 带 BOM
+        let mut be = vec![0xFE, 0xFF];
+        be.extend("中文\n".encode_utf16().flat_map(|u| u.to_be_bytes()));
+        let (t, e) = decode_bytes(&be);
+        assert_eq!(e, Encoding::Utf16Be);
+        assert_eq!(t, "中文\n");
+
+        // GBK (Windows 才有真解码; 非 Windows 走 lossy stub, 只锁编码判定)
+        let (t, e) = decode_bytes(GBK_LINE);
+        assert_eq!(e, Encoding::Gbk);
+        #[cfg(windows)]
+        assert_eq!(t, "INFO 中文错误日志\n");
+        #[cfg(not(windows))]
+        let _ = t;
+    }
+
+    #[test]
+    fn decode_bytes_empty_is_empty_utf8() {
+        assert_eq!(decode_bytes(b""), (String::new(), Encoding::Utf8));
+    }
+
+    #[test]
+    fn decode_bytes_keeps_stray_nul_utf8_intact() {
+        // 与 detect 的 2026-10-10 红队修复呼应: 零星 NUL 的短文件不许被当 UTF-16 吞掉。
+        let (t, e) = decode_bytes(b"a\0b,c\n");
+        assert_eq!(e, Encoding::Utf8);
+        assert_eq!(t, "a\0b,c\n");
+    }
 
     #[test]
     fn detect_bom_variants() {
